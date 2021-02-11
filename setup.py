@@ -1,6 +1,6 @@
 import setuptools
 
-requires = ['numpy', 'psycopg2']
+requires = ['numpy', 'psycopg2-binary']
 
 setuptools.setup(
     name='localedb',
