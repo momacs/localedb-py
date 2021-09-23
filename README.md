@@ -59,13 +59,13 @@ The last instruction should result in the following being printed:
 
 ## Notebooks
 
-The following computational notebooks demonstrate the usage and capabilities of the package:
-- [Data Access](https://github.com/momacs/localedb-py/notebooks/01-data-access.ipynb)
-- [Multivariate Time Series Clustering](https://github.com/momacs/localedb-py/notebooks/02-mvts-cluster.ipynb)
-- [Multivariate Time Series Clustering (Continuous Wavelet Transform)](https://github.com/momacs/localedb-py/notebooks/03-mvts-cluster-cwt.ipynb)
-- [Multivariate Time Series Clustering (Mapping)](https://github.com/momacs/localedb-py/notebooks/04-mvts-cluster-map.ipynb)
-- [Multivariate Time Series Clustering (Distance Matrices](https://github.com/momacs/localedb-py/notebooks/05-mvts-cluster-dist-mat.ipynb)
-- [Multivariate Time Series Clustering (Performance Evaluation](https://github.com/momacs/localedb-py/notebooks/06-mvts-cluster-perf-eval.ipynb)
+The following [computational notebooks](https://github.com/momacs/localedb-py/tree/master/notebooks) demonstrate the usage and capabilities of the package:
+- [Data Access](https://github.com/momacs/localedb-py/blob/master/notebooks/01-data-access.ipynb)
+- [Multivariate Time Series Clustering](https://github.com/momacs/localedb-py/blob/master/notebooks/02-mvts-cluster.ipynb)
+- [Multivariate Time Series Clustering (Continuous Wavelet Transform)](https://github.com/momacs/localedb-py/blob/master/notebooks/03-mvts-cluster-cwt.ipynb)
+- [Multivariate Time Series Clustering (Mapping)](https://github.com/momacs/localedb-py/blob/master/notebooks/04-mvts-cluster-map.ipynb)
+- [Multivariate Time Series Clustering (Distance Matrices](https://github.com/momacs/localedb-py/blob/master/notebooks/05-mvts-cluster-dist-mat.ipynb)
+- [Multivariate Time Series Clustering (Performance Evaluation](https://github.com/momacs/localedb-py/blob/master/notebooks/06-mvts-cluster-perf-eval.ipynb)
 
 
 ## License
