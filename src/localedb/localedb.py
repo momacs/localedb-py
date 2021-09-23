@@ -1,12 +1,38 @@
 # -*- coding: utf-8 -*-
 """Functionality built on top of LocaleDB data."""
 
+import folium
+import itertools
+import math
+import matplotlib as mpl
+import matplotlib.pyplot as plt
 import numpy as np
+import os
+import pandas as pd
+import pickle
 import psycopg2
 import psycopg2.extras
+import pywt
+import scipy
+import scipy.signal
+import sklearn
+import sklearn.cluster
+import sklearn.decomposition
+import sklearn.metrics
+import sklearn.preprocessing
+import sklearn_extra.cluster
+import sqlite3
 import sys
+import time
+import tslearn
+import tslearn.clustering
+import tslearn.metrics
+import tslearn.preprocessing
 
+from collections.abc import Iterable
 from numpy import linalg
+
+from .util import plot_init
 
 
 __all__ = ['LocaleDB']
@@ -14,7 +40,7 @@ __all__ = ['LocaleDB']
 
 # ----------------------------------------------------------------------------------------------------------------------
 class UnknownLocaleError(Exception): pass
-class UnknownDiseaseError: pass
+class UnknownDiseaseError(Exception): pass
 class ObjectStateError(Exception): pass
 
 
@@ -62,6 +88,69 @@ class LocaleDB(object):
             c.execute(qry, vars)
             if do_get:
                 return c.fetchall()
+
+    def _get_dis_dyn_by_day_x(self, x, day_from=1, day_to=sys.maxsize, itersize=2000):
+        self._req_disease() and self._req_locale()
+        if day_from > day_to:
+            raise ValueError('Incorrect day range')
+        res = {}
+        return np.array(
+            self._exec(
+                f'SELECT {x} FROM dis.dyn WHERE disease_id = %s AND locale_id = %s AND day_i BETWEEN %s AND %s ORDER BY day_i;',
+                [self.disease_id, self.locale_id, day_from, day_to],
+                itersize
+            )
+        )
+
+    def _get_dis_dyn_norm(self, conf, dead, do_inc_delta=False):
+        self._req_disease() and self._req_locale()
+        # res = self.get_dis_dyn_delta(conf, dead)
+        # if not res.ok:
+        #     return res
+        # delta = res.res
+        delta = self.get_dis_dyn_delta_by_day(conf, dead)
+
+        # norm1 = np.sum(arr1 ** 2)
+        # norm2 = np.sum(arr2 ** 2)
+        # norm = np.sum((arr1 - arr2) ** 2)
+
+        return {
+            'conf': linalg.norm(delta['conf']),
+            'dead': linalg.norm(delta['dead']),
+            'delta': None if not do_inc_delta else delta
+        }
+
+    def _get_dis_dyn_comp_stats_x(self, x, vals, day_from=1, day_to=sys.maxsize, itersize=2000):
+        Y_obs = np.array(self._get_dis_dyn_by_day_x(x, day_from, day_to, itersize)).flatten()
+        Y_hat = np.array(vals)
+        if Y_obs.size != Y_hat.size:
+            raise ValueError(f'The sizes of the observed ({Y_obs.size}) and predicted ({Y_hat.size}) time series do not match.')
+
+        # Corr:
+        corr = np.corrcoef(Y_obs, Y_hat)[0,1]
+        if np.isnan(corr):
+            corr = 0.0
+
+        # MAE:
+        mae = np.absolute(Y_obs - Y_hat).mean()
+
+        # RMSE:
+        rmse = np.linalg.norm(Y_obs - Y_hat) / np.sqrt(len(Y_obs))
+
+        # SRMSE:
+        ybar = Y_obs.mean()
+        srmse = rmse / ybar
+
+        # R2:
+        u = np.sum((Y_hat - Y_obs)**2)
+        v = np.sum((Y_obs - ybar)**2)
+        r2 = 1.0 - u / v
+
+        return { 'corr': corr, 'mae': mae, 'rmse': rmse, 'srmse': srmse, 'r2': r2 }
+
+    @staticmethod
+    def _get_nan_idx(x):
+        return np.isnan(x), lambda z: z.nonzero()[0]
 
     def _get_next_cursor_name(self):
         self.cursor_num += 1
@@ -119,54 +208,26 @@ class LocaleDB(object):
             WHERE h.stcotrbg LIKE '{fips}%';
         """)
 
-    def get_dis_dyn_norm(self, conf, dead, do_inc_delta=False):
-        self._req_disease() and self._req_locale()
-        # res = self.get_dis_dyn_delta(conf, dead)
-        # if not res.ok:
-        #     return res
-        # delta = res.res
-        delta = self.get_dis_dyn_delta_by_day(conf, dead)
-
-        # norm1 = np.sum(arr1 ** 2)
-        # norm2 = np.sum(arr2 ** 2)
-        # norm = np.sum((arr1 - arr2) ** 2)
-
-        return {
-            'conf': linalg.norm(delta['conf']),
-            'dead': linalg.norm(delta['dead']),
-            'delta': None if not do_inc_delta else delta
-        }
-
-    def _get_dis_dyn_comp_stats_x(self, x, vals, day_from=1, day_to=sys.maxsize, itersize=2000):
-        Y_obs = np.array(self._get_dis_dyn_by_day_x(x, day_from, day_to, itersize)).flatten()
-        Y_hat = np.array(vals)
-        if Y_obs.size != Y_hat.size:
-            raise ValueError(f'The sizes of the observed ({Y_obs.size}) and predicted ({Y_hat.size}) time series do not match.')
-
-        # Corr:
-        corr = np.corrcoef(Y_obs, Y_hat)[0,1]
-        if np.isnan(corr):
-            corr = 0.0
-
-        # MAE:
-        mae = np.absolute(Y_obs - Y_hat).mean()
-
-        # RMSE:
-        rmse = np.linalg.norm(Y_obs - Y_hat) / np.sqrt(len(Y_obs))
-
-        # SRMSE:
-        ybar = Y_obs.mean()
-        srmse = rmse / ybar
-
-        # R2:
-        u = np.sum((Y_hat - Y_obs)**2)
-        v = np.sum((Y_obs - ybar)**2)
-        r2 = 1.0 - u / v
-
-        return { 'corr': corr, 'mae': mae, 'rmse': rmse, 'srmse': srmse, 'r2': r2 }
+    @staticmethod
+    def _smooth(x, window_len=11, window='hanning'):
+        if x.ndim != 1:
+            raise ValueError('One-dimensional array expected.')
+        if x.size < window_len:
+            raise ValueError('Input vector needs to be bigger than window size.')
+        if window_len < 3:
+            return x
+        if not window in ['flat', 'hanning', 'hamming', 'bartlett', 'blackman']:
+            raise ValueError('Unknown window type: flat, hanning, hamming, bartlett, blackman')
+        s = np.r_[2 * x[0] - x[window_len - 1::-1], x, 2 * x[-1] - x[-1:-window_len:-1]]
+        if window == 'flat':  # moving average
+            w = np.ones(window_len, 'd')
+        else:
+            w = eval(f'np.{window}({window_len})')
+        y = np.convolve(w / w.sum(), s, mode='same')
+        return y[window_len:-window_len + 1]
 
     def clear_disease(self):
-        """Clear the current disease.
+        """Clears the current disease.
 
         Returns:
             LocaleDB: self
@@ -176,7 +237,7 @@ class LocaleDB(object):
         return self
 
     def clear_locale(self):
-        """Clear the current locale.
+        """Clears the current locale.
 
         Returns:
             LocaleDB: self
@@ -207,6 +268,76 @@ class LocaleDB(object):
             self.conn = None
         return self
 
+    def get_dis_dyn_by_fips(self, fips='42___', cols='day day_i n_conf n_dead n_rec case_density r0 r0_ci90 test_n_pos test_n_neg test_r_pos beds_hosp_cap beds_hosp_usage_tot beds_hosp_usage_covid beds_icu_cap beds_icu_usage_tot beds_icu_usage_covid vax_n_init vax_n_done vax_r_init vax_r_done'.split(' '), day0=1, day1=99999999, do_interpolate=False, n_diff=0, smooth_window_len=0, smooth_window='hanning', do_scale=False, get_pandas=False):
+        """Get disease dynamics for a specified locale or a set of locales given by the US FIPS code SQL wildcard."""
+
+        ret = []
+
+        ids = [r[0] for r in self._exec('SELECT id FROM main.locale WHERE fips LIKE %s ORDER BY fips ASC', [fips])]
+
+        for id in ids:
+            ret.append(self.get_dis_dyn_by_id(id, cols, day0, day1, do_interpolate, n_diff, smooth_window_len, smooth_window, do_scale))
+
+        if get_pandas:
+            ret = pd.DataFrame(ret)
+            ret = ret.T
+            ret.columns = ids
+        else:
+            ret = np.array(ret, dtype=float)
+
+        return (ret, ids)
+
+    def get_dis_dyn_by_id(self, id, cols='day day_i n_conf n_dead n_rec case_density r0 r0_ci90 test_n_pos test_n_neg test_r_pos beds_hosp_cap beds_hosp_usage_tot beds_hosp_usage_covid beds_icu_cap beds_icu_usage_tot beds_icu_usage_covid vax_n_init vax_n_done vax_r_init vax_r_done'.split(' '), day0=1, day1=99999999, do_interpolate=False, n_diff=0, smooth_window_len=0, smooth_window='hanning', do_scale=False, get_pandas=False):
+        """Get disease dynamics."""
+
+        self._req_disease()
+
+        ret = pd.read_sql_query(f'SELECT {",".join(cols)} FROM dis.dyn WHERE disease_id = %s AND locale_id = %s AND day_i BETWEEN %s AND %s', self.conn, params=[self.disease_id, id, day0, day1])
+        ret = ret.transpose().to_numpy(dtype=np.float)
+
+        if do_interpolate:
+            for i in range(len(cols)):
+                if np.isnan(ret[i,]).all():
+                    continue
+                nans, ret_ = self.__class__._get_nan_idx(ret[i,])
+                ret[i,nans] = np.interp(ret_(nans), ret_(~nans), ret[i,~nans])
+
+        if n_diff > 0:
+            ret_ = np.empty((ret.shape[0], ret.shape[1] - n_diff))
+            for i in range(len(cols)):
+                ret_[i,] = np.diff(ret[i,], n_diff)
+            ret = ret_
+
+        if smooth_window_len > 0:
+            for i in range(ret.shape[0]):
+                 ret[i] = self.__class__._smooth(ret[i], smooth_window_len, smooth_window)
+
+        if do_scale:
+            # ret = sklearn.preprocessing.minmax_scale(ret, axis=1)
+
+            ret = np.transpose(ret, (1,0))
+            # ret = sklearn.preprocessing.RobustScaler().fit_transform(ret)
+            ret = sklearn.preprocessing.StandardScaler().fit_transform(ret)
+            ret = np.transpose(ret, (1,0))
+
+            # for i in range(ret.shape[0]):
+            #     ret[i] = sklearn.preprocessing.RobustScaler().fit_transform(ret[i])
+
+        if get_pandas:
+            ret = pd.DataFrame(ret, columns=cols)
+
+        return ret
+
+    def get_dis_dyn_by_day_conf(self, day_from=1, day_to=sys.maxsize, itersize=2000):
+        """Get number of confirmed cases by day."""
+
+        return self._get_dis_dyn_by_day_x('n_conf', day_from, day_to, itersize)
+
+    def get_dis_dyn_by_day_dead(self, day_from=1, day_to=sys.maxsize, itersize=2000):
+        """Get number of deaths by day."""
+
+        return self._get_dis_dyn_by_day_x('n_dead', day_from, day_to, itersize)
+
     def get_dis_dyn_by_date(self, date_from='2020.01.01', date_to='3000.01.01', itersize=2000):
         self._req_disease() and self._req_locale()
         return self._exec(
@@ -215,38 +346,9 @@ class LocaleDB(object):
             itersize
         )
 
-    def get_dis_dyn_comp_stats(self, conf, dead, day_from=1, day_to=sys.maxsize, itersize=2000):
-        return {
-            'conf': self.get_dis_dyn_comp_stats_conf(conf, day_from, day_to, itersize),
-            'dead': self.get_dis_dyn_comp_stats_dead(dead, day_from, day_to, itersize)
-        }
-
-    def get_dis_dyn_comp_stats_conf(self, vals, day_from=1, day_to=sys.maxsize, itersize=2000):
-        return self._get_dis_dyn_comp_stats_x('n_conf', vals, day_from, day_to, itersize)
-
-    def get_dis_dyn_comp_stats_dead(self, vals, day_from=1, day_to=sys.maxsize, itersize=2000):
-        return self._get_dis_dyn_comp_stats_x('n_dead', vals, day_from, day_to, itersize)
-
-    def _get_dis_dyn_by_day_x(self, x, day_from=1, day_to=sys.maxsize, itersize=2000):
-        self._req_disease() and self._req_locale()
-        if day_from > day_to:
-            raise ValueError('Incorrect day range')
-        res = {}
-        return np.array(
-            self._exec(
-                f'SELECT {x} FROM dis.dyn WHERE disease_id = %s AND locale_id = %s AND day_i BETWEEN %s AND %s ORDER BY day_i;',
-                [self.disease_id, self.locale_id, day_from, day_to],
-                itersize
-            )
-        )
-
-    def get_dis_dyn_by_day_conf(self, day_from=1, day_to=sys.maxsize, itersize=2000):
-        return self._get_dis_dyn_by_day_x('n_conf', day_from, day_to, itersize)
-
-    def get_dis_dyn_by_day_dead(self, day_from=1, day_to=sys.maxsize, itersize=2000):
-        return self._get_dis_dyn_by_day_x('n_dead', day_from, day_to, itersize)
-
     def get_dis_dyn_by_day(self, do_get_conf=False, do_get_dead=False, day_from=1, day_to=sys.maxsize, itersize=2000):
+        """Get disease dynamics by day."""
+
         self._req_disease() and self._req_locale()
         if day_from > day_to:
             raise ValueError('Incorrect day range')
@@ -269,7 +371,21 @@ class LocaleDB(object):
             )
         return res
 
+    def get_dis_dyn_comp_stats(self, conf, dead, day_from=1, day_to=sys.maxsize, itersize=2000):
+        return {
+            'conf': self.get_dis_dyn_comp_stats_conf(conf, day_from, day_to, itersize),
+            'dead': self.get_dis_dyn_comp_stats_dead(dead, day_from, day_to, itersize)
+        }
+
+    def get_dis_dyn_comp_stats_conf(self, vals, day_from=1, day_to=sys.maxsize, itersize=2000):
+        return self._get_dis_dyn_comp_stats_x('n_conf', vals, day_from, day_to, itersize)
+
+    def get_dis_dyn_comp_stats_dead(self, vals, day_from=1, day_to=sys.maxsize, itersize=2000):
+        return self._get_dis_dyn_comp_stats_x('n_dead', vals, day_from, day_to, itersize)
+
     def get_dis_dyn_delta_by_day(self, conf=None, dead=None, day_from=1, day_to=sys.maxsize, itersize=2000):
+        """Get once differenced disease dynamics cases by day."""
+
         self._req_disease() and self._req_locale()
         if day_from > day_to:
             raise ValueError('Incorrect day range')
@@ -298,8 +414,70 @@ class LocaleDB(object):
             res['dead'] = dead_obs - np.ndarray(dead)
         return res
 
+    def get_health_stats_by_fips(self, fips='42___', get_pandas=False):
+        """Returns health statistics for a locale or a set of locales."""
+
+        ret = self._exec(
+            '''
+            WITH locale AS (SELECT id FROM main.locale WHERE fips LIKE %s)
+            SELECT
+                l.id,
+                h.premat_death, h.unins_adults, h.pcp, h.prev_hosp_stays, h.adult_obesity, h.unemp_rate, h.child_in_pov, h.sex_trans_inf, h.mamm_screen, h.phys_inact, h.unins, h.dentists, h.unins_child, h.alcohol_driving_deaths, h.flu_vax,
+                w.tavg_m1, w.tavg_m2, w.tavg_m3, w.tavg_m4, w.tavg_m5, w.tavg_m6, w.tavg_m7, w.tavg_m8, w.tavg_m9, w.tavg_m10, w.tavg_m11, w.tavg_m12
+            FROM locale l LEFT JOIN
+            (
+                SELECT locale_id,
+                    MAX(rawvalue) FILTER (WHERE measure_id =   1) AS premat_death,
+                    MAX(rawvalue) FILTER (WHERE measure_id =   3) AS unins_adults,
+                    MAX(rawvalue) FILTER (WHERE measure_id =   4) AS pcp,
+                    MAX(rawvalue) FILTER (WHERE measure_id =   5) AS prev_hosp_stays,
+                    MAX(rawvalue) FILTER (WHERE measure_id =  11) AS adult_obesity,
+                    MAX(rawvalue) FILTER (WHERE measure_id =  23) AS unemp_rate,
+                    MAX(rawvalue) FILTER (WHERE measure_id =  24) AS child_in_pov,
+                    --MAX(rawvalue) FILTER (WHERE measure_id =  43) AS violent_crime_rate,
+                    MAX(rawvalue) FILTER (WHERE measure_id =  45) AS sex_trans_inf,
+                    MAX(rawvalue) FILTER (WHERE measure_id =  50) AS mamm_screen,
+                    MAX(rawvalue) FILTER (WHERE measure_id =  70) AS phys_inact,
+                    MAX(rawvalue) FILTER (WHERE measure_id =  85) AS unins,
+                    MAX(rawvalue) FILTER (WHERE measure_id =  88) AS dentists,
+                    MAX(rawvalue) FILTER (WHERE measure_id = 122) AS unins_child,
+                    --MAX(rawvalue) FILTER (WHERE measure_id = 125) AS air_poll,
+                    MAX(rawvalue) FILTER (WHERE measure_id = 134) AS alcohol_driving_deaths,
+                    MAX(rawvalue) FILTER (WHERE measure_id = 155) AS flu_vax
+                FROM health.health
+                WHERE end_year = 2017
+                GROUP BY locale_id
+            ) h ON h.locale_id = l.id LEFT JOIN
+            (
+                SELECT locale_id,
+                    MAX(tavg) FILTER (WHERE month =  1) AS tavg_m1,
+                    MAX(tavg) FILTER (WHERE month =  2) AS tavg_m2,
+                    MAX(tavg) FILTER (WHERE month =  3) AS tavg_m3,
+                    MAX(tavg) FILTER (WHERE month =  4) AS tavg_m4,
+                    MAX(tavg) FILTER (WHERE month =  5) AS tavg_m5,
+                    MAX(tavg) FILTER (WHERE month =  6) AS tavg_m6,
+                    MAX(tavg) FILTER (WHERE month =  7) AS tavg_m7,
+                    MAX(tavg) FILTER (WHERE month =  8) AS tavg_m8,
+                    MAX(tavg) FILTER (WHERE month =  9) AS tavg_m9,
+                    MAX(tavg) FILTER (WHERE month = 10) AS tavg_m10,
+                    MAX(tavg) FILTER (WHERE month = 11) AS tavg_m11,
+                    MAX(tavg) FILTER (WHERE month = 12) AS tavg_m12
+                FROM weather.weather
+                WHERE year = 2020
+                GROUP BY locale_id
+            ) w ON w.locale_id = h.locale_id;
+            ''', [fips]
+        )
+
+        if get_pandas:
+            ret = pd.DataFrame(ret).astype('float')
+            ret.set_index('id', inplace=True)
+
+        return ret
+
     def get_locale_inf(self):
         pass
+
         # self._check_locale()
         # inf = self._exec(f'SELECT iso2, iso3 FROM main.locale WHERE id = ?;', [self.locale_id])[0]
         # return f'{inf.iso2} {inf.iso3}'
@@ -383,7 +561,7 @@ class LocaleDB(object):
 
     @staticmethod
     def pad_fips(fips):
-        """Zero-pad the FIPS code provided.
+        """Zero-pads the FIPS code provided.
 
         Many datasets incorrectly declare the FIPS code as integer instead of a string.  Consequently, Alaska's FIPS
         code of '02' becomes just 2.  This method fixes those issues for both US states (a two-digit string) and
@@ -399,8 +577,61 @@ class LocaleDB(object):
             return f'0{f}'
         return f
 
+    def plot_clusters_map(self, ids, clusters, n_clusters, radius=4, radius_noisy_ratio=0.4, width='100%', height='100%', color_rest='silver', color_noisy='#333333', colors=list(mpl.colors.XKCD_COLORS.values()), txt_show=False, txt_fontsize=1.0, txt_offset=10, **kwargs):
+        # list(mpl.colors.TABLEAU_COLORS.values())    # n=10
+        # list(mpl.colors.CSS4_COLORS.values())       # n=148
+        # list(mpl.colors.XKCD_COLORS.values())       # n=949
+        # list(mpl.colors._colors_full_map.values())  # n=1163
+
+        # clusters = [c - min(clusters) for c in clusters]
+
+        if n_clusters <= 0 or n_clusters > len(colors):
+            n_clusters = len(colors) - 1
+
+        specs = []
+        # for i in range(len(set(clusters))):
+        color_idx = 0  # not incremented for sklearn's "noisy sample" (i.e., a -1 cluster)
+        for (i, label) in enumerate(np.unique(clusters)):
+            if label == -1:
+                color = color_noisy
+            else:
+                color = colors[color_idx] if i <= n_clusters - 1 else color_rest
+                color_idx += 1
+            specs.append({ 'cluster': label, 'ids': [], 'color': color })
+        for i in range(len(ids)):
+            specs[clusters[i] + (0 if -1 not in np.unique(clusters) else 1)]['ids'].append(ids[i])
+        specs = sorted(specs, key=lambda i: len(i['ids']), reverse=True)
+
+        fg_txt = folium.FeatureGroup(name='Clustering: Text', show=txt_show)
+        fg_mkr = folium.FeatureGroup(name=f'Clustering: Markers ({len(np.unique(clusters))})')
+
+        with self.conn.cursor() as c:
+            for spec in specs:
+                for i in spec['ids']:
+                    r = self._exec('SELECT COALESCE(lat, 0.0) AS lat, COALESCE(long, 0.0) AS long FROM main.locale WHERE id = %s', [int(i)])[0]
+                    if spec['cluster'] == -1:  # sklearn's "noisy sample"
+                        folium.CircleMarker(location=[r.lat, r.long], tooltip=f'<b>Cluster:</b> {spec["cluster"]}', radius=radius * radius_noisy_ratio, color=spec['color'], weight=1.50, opacity=0.50, fill=True, fill_opacity=0.35).add_to(fg_mkr)
+                    else:
+                        folium.CircleMarker([r.lat, r.long], tooltip=f'<b>Cluster:</b> {spec["cluster"]}', radius=radius, color=spec['color'], weight=1.50, opacity=0.50, fill=True, fill_opacity=0.35).add_to(fg_mkr)
+                        if txt_fontsize > 0:
+                            folium.Marker([r.lat + txt_offset, r.long + txt_offset], icon=folium.DivIcon(html=f'<div style="color: #777; font-size: {txt_fontsize}em;">{spec["cluster"]}</div>'), opacity=1.00).add_to(fg_txt)
+
+        fig = folium.Figure(width, height)
+        m = folium.Map(**kwargs)
+        m.add_to(fig)
+
+        folium.TileLayer('https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}{r}.png', name='Stadia.AlidadeSmooth', attr='&copy; <a href="https://stadiamaps.com/">Stadia Maps</a>, &copy; <a href="https://openmaptiles.org/">OpenMapTiles</a> &copy; <a href="http://openstreetmap.org">OpenStreetMap</a> contributors').add_to(m)
+        folium.TileLayer('Stamen Toner').add_to(m)
+        folium.TileLayer('Stamen Terrain').add_to(m)
+
+        fg_txt.add_to(m, )
+        fg_mkr.add_to(m)
+        folium.LayerControl().add_to(m)
+
+        return m
+
     def set_disease(self, name):
-        """Set the current disease by name.
+        """Sets the current disease by name.
 
         Returns:
             LocaleDB: self
@@ -412,7 +643,7 @@ class LocaleDB(object):
         return self
 
     def set_locale_by_name(self, admin0, admin1=None, admin2=None):
-        """Set the current locale by name.
+        """Sets the current locale by name.
 
         Returns:
             LocaleDB: self
@@ -434,7 +665,7 @@ class LocaleDB(object):
         return self
 
     def set_locale_by_us_fips(self, fips):
-        """Set the current locale by U.S. FIPS code.
+        """Sets the current locale by U.S. FIPS code.
 
         Returns:
             LocaleDB: self
@@ -453,68 +684,3 @@ class LocaleDB(object):
         # self._set_pop_view_household_geo(fips, 'st')
 
         return self
-
-
-# ----------------------------------------------------------------------------------------------------------------------
-if __name__ == '__main__':
-    import time
-
-    def disp_locale_inf(db):
-        t0 = time.perf_counter()
-        print(f'id: {db.locale_id}    iso_num: {db.locale_iso_num}    fips: {db.locale_fips}    pop: {db.get_pop_size()}    pop-synth: {db.get_pop_size_synth()}    ({time.perf_counter() - t0:.0f} s)', flush=True)
-
-    def disp_locale_dis_dyn_by_day(db):
-        conf = db.get_dis_dyn_by_day_conf()
-        print(f"{db.locale_id}: n={conf.size}; {conf.flatten().tolist()[:42]}")
-
-    def disp_synth_pop(db):
-        c = db.get_synth_pop(['sex', 'age', 'WIDTH_BUCKET(age::INTEGER,ARRAY[18,60]) AS age_grp', 'income', 'CASE WHEN school_id IS NULL THEN 0 ELSE 1 END AS is_student', 'CASE WHEN workplace_id IS NULL THEN 0 ELSE 1 END is_worker'], limit=4)
-        print(np.array(c).tolist())
-
-    db = LocaleDB()
-    db.set_disease('COVID-19')
-
-    print('Random locale selection:')
-    print(db.get_rand_us_state_fips(3))
-    print(db.get_rand_us_county_fips(3))
-
-    print('\nTest basic population and synthetic population queries:')
-    db.set_locale_by_name('China')                            ; disp_locale_inf(db)
-    db.set_locale_by_name('Italy')                            ; disp_locale_inf(db)
-    db.set_locale_by_name('US')                               ; disp_locale_inf(db)
-
-    db.set_locale_by_name('US', 'Alaska')                     ; disp_locale_inf(db)
-    db.set_locale_by_us_fips('02')                            ; disp_locale_inf(db)
-    db.set_locale_by_name('US', 'Alaska', 'Anchorage')        ; disp_locale_inf(db)
-    db.set_locale_by_us_fips('02020')                         ; disp_locale_inf(db)
-
-    db.set_locale_by_name('US', 'Pennsylvania')               ; disp_locale_inf(db)
-    db.set_locale_by_us_fips('42')                            ; disp_locale_inf(db)
-    db.set_locale_by_name('US', 'Pennsylvania', 'Allegheny')  ; disp_locale_inf(db)
-    db.set_locale_by_us_fips('42003')                         ; disp_locale_inf(db)
-
-    print('\nTest disease dynamics queries:')
-    db.set_locale_by_name('China')                            ; disp_locale_dis_dyn_by_day(db)
-    db.set_locale_by_name('Italy')                            ; disp_locale_dis_dyn_by_day(db)
-    db.set_locale_by_name('US')                               ; disp_locale_dis_dyn_by_day(db)
-    db.set_locale_by_name('US', 'Alaska')                     ; disp_locale_dis_dyn_by_day(db)
-    db.set_locale_by_name('US', 'Alaska', 'Anchorage')        ; disp_locale_dis_dyn_by_day(db)
-    db.set_locale_by_name('US', 'Pennsylvania')               ; disp_locale_dis_dyn_by_day(db)
-    db.set_locale_by_name('US', 'Pennsylvania', 'Allegheny')  ; disp_locale_dis_dyn_by_day(db)
-
-    print('\nTest disease dynamics comparison:')
-    db.set_locale_by_name('US')
-    print(db.get_dis_dyn_comp_stats_conf([1, 1, 2, 2, 6], day_to=5))
-
-    print('\nTest synthetic population retrieval queries:')
-    db.set_locale_by_name('US', 'Pennsylvania')               ; disp_synth_pop(db)
-    db.set_locale_by_name('US', 'Pennsylvania', 'Allegheny')  ; disp_synth_pop(db)
-    db.set_locale_by_name('US', 'Pennsylvania', 'Adams')      ; disp_synth_pop(db)
-
-    db.set_locale_by_us_fips('02020')
-    conf = db.get_dis_dyn_by_day_conf(20,77)  # get the time series of confirmed COVID-19 cases from day 20 to day 77
-    print(conf.flatten().tolist())            # print the
-
-# LocaleDB todo:
-#     Update licence date
-#     Add pad_fips() method to locale import routine
