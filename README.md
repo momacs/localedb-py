@@ -72,7 +72,7 @@ The following [computational notebooks](https://github.com/momacs/localedb-py/tr
 
 Below is a brief narrative based on a few results we discuss in the [notebooks](https://github.com/momacs/localedb-py/tree/master/notebooks).
 
-### 1. We cluster the 67 counties of the state of Pennsylvania by Covid-19 disease dynamics (specifically, the number of confirmed cases and the number of deaths, smoothed and standardized)
+#### 1. We cluster the 67 counties of the state of Pennsylvania by Covid-19 disease dynamics (specifically, the number of confirmed cases and the number of deaths, smoothed and standardized)
 
 ![Alt text](media/example-mvts-cluster/01-c19-mvts-cluster-pa.png?raw=true)
 
