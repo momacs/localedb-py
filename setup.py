@@ -1,17 +1,18 @@
 import setuptools
 
-requires = ['numpy', 'psycopg2-binary']
+requires = ['folium', 'matplotlib', 'numpy', 'pandas', 'psycopg2-binary', 'pywt', 'scipy', 'scikit-learn', 'scikit-learn-extra', 'tslearn']
+
 
 setuptools.setup(
     name='localedb',
-    version='0.0.1',
+    version='0.0.2',
     author='Tomek D. Loboda',
     author_email='tomek.loboda@gmail.com',
     description='Python interface to the LocaleDB',
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
     url='https://github.com/momacs/localedb_py',
-    keywords=['db', 'dbi', 'interface', 'postgres', 'postgresql'],
+    keywords=['binding', 'db', 'dbi', 'interface', 'postgres', 'postgresql'],
     packages=['localedb'],
     package_dir={'': 'src'},
     python_requires='>=3.6',
