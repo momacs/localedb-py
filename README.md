@@ -5,10 +5,18 @@ Python bindings for [LocaleDB](https://github.com/momacs/localedb).
 
 ## Dependencies
 
-- [Python 3](https://www.python.org)
-- [numpy](https://numpy.org)
-- [psycopg2](https://pypi.org/project/psycopg2)
 - [LocaleDB](https://github.com/momacs/localedb)
+- [Python 3](https://www.python.org)
+- [folium](https://github.com/python-visualization/folium)
+- [matplotlib](https://matplotlib.org/)
+- [numpy](https://numpy.org)
+- [pandas](https://pandas.pydata.org/)
+- [psycopg2](https://pypi.org/project/psycopg2)
+- [pywt](https://github.com/PyWavelets/pywt)
+- [scipy](https://www.scipy.org/)
+- [scikit-learn](https://scikit-learn.org)
+- [scikit-learn-extra](https://github.com/scikit-learn-contrib/scikit-learn-extra)
+- [tslearn](https://github.com/tslearn-team/tslearn/)
 
 
 ## Setup
@@ -38,8 +46,8 @@ db.set_locale_by_us_fips('02')         # same
 db.set_locale_by_name('US', 'Alaska', 'Anchorage')  # set the county of Anchorage, Alaska as the current locale
 db.set_locale_by_us_fips('02020')                   # same
 
-conf = db.get_dis_dyn_by_day_conf(20,77)  # get the time series of confirmed COVID-19 cases from day 20 to day 77
-print(conf.flatten().tolist())            # print the time series
+conf = db.get_dis_dyn_by_day_conf(20,77)  # get the time series of confirmed cases from day 20 to day 77
+print(conf.flatten().tolist())            # print that time series
 ```
 
 The last instruction should result in the following being printed:
