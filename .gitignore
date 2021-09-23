@@ -1,8 +1,15 @@
 # Local:
 /_backup
 /bin
+/etc
+/include
 /lib
+/share
 /tmp
+/.gitignore
+/commit.txt
+/cp-to-pkg
+/init-venv
 /is-root
 /mk-src-backup
 /pyvenv.cfg
